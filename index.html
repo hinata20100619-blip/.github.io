@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkyWay リアルタイムカメラ共有</title>
+  <!-- SkyWay SDK の読み込み -->
+  <script src="https://cdn.jsdelivr.net/npm/@skyway-sdk/room/dist/skyway_room.js"></script>
+  <style>
+    body { font-family: sans-serif; text-align: center; }
+    #video-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; margin-top: 20px; }
+    video { width: 100%; background: #000; border-radius: 8px; }
+    .controls { margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+  <h1>SkyWay カメラ共有アプリ</h1>
+
+  <div class="controls">
+    <input type="text" id="room-name" placeholder="ルーム名を入力" value="my-room">
+    <button id="join">ルームに参加</button>
+  </div>
+
+  <div id="video-container">
+    <!-- 自分のビデオ -->
+    <div>
+      <p>自分</p>
+      <video id="local-video" muted playsinline autoplay></video>
+    </div>
+    <!-- 他人のビデオがここに追加される -->
+  </div>
+
+  <script>
+    const { SkyWayContext, SkyWayRoom, SkyWayAuthToken, uuidV4 } = SkyWayContext;
+
+    // --- 設定項目 ---
+    const appId = '3c45cda7-323e-45ed-8642-eb534998e2b4'; // ここにApplication IDを入力
+    const secretKey = '0aFaU7NmY2isArXca7pICNu9k0371Dj+Kcl28yGRFeY='; // ここにSecret Keyを入力 (テスト用)
+
+    // 本来はサーバー側で生成すべきですが、テスト用にフロントエンドでトークンを生成します
+    const token = new SkyWayAuthToken({
+      jti: uuidV4(),
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 600, // 10分間有効
+      scope: {
+        app: {
+          id: appId,
+          turn: true,
+          actions: ['read'],
+          rooms: [
+            {
+              name: '*',
+              methods: ['create', 'delete', 'aggregate'],
+              copyMessages: true,
+              member: {
+                name: '*',
+                methods: ['publish', 'subscribe', 'updateMetadata'],
+              },
+            },
+          ],
+        },
+      },
+    }).encode(secretKey);
+
+    const btnJoin = document.getElementById('join');
+    const roomNameInput = document.getElementById('room-name');
+    const localVideo = document.getElementById('local-video');
+    const videoContainer = document.getElementById('video-container');
+
+    btnJoin.onclick = async () => {
+      if (roomNameInput.value === '') return;
+
+      // 1. コンテキストの作成
+      const context = await SkyWayContext.Create(token);
+
+      // 2. ルーム（SFU形式）への参加
+      const room = await SkyWayRoom.FindOrCreate(context, {
+        type: 'sfu',
+        name: roomNameInput.value,
+      });
+      const me = await room.join();
+
+      // 3. 自分のカメラ・マイクを取得して公開
+      const { audio, video } = await SkyWayRoom.CreateSkyWayAudioVideoStreams();
+      localVideo.srcObject = new MediaStream([video.track]);
+      await me.publish(audio);
+      await me.publish(video);
+
+      // 4. 他の参加者の映像を受信する処理
+      const subscribeAndAttach = async (publication) => {
+        if (publication.publisher.id === me.id) return; // 自分のは無視
+
+        const { stream } = await me.subscribe(publication.id);
+        
+        // 映像を表示するための要素を作成
+        const newVideo = document.createElement('video');
+        newVideo.playsInline = true;
+        newVideo.autoplay = true;
+        newVideo.id = `video-${publication.id}`;
+        
+        // メディアストリームをセット
+        if (stream.track.kind === 'video') {
+          newVideo.srcObject = new MediaStream([stream.track]);
+          const wrapper = document.createElement('div');
+          wrapper.appendChild(newVideo);
+          videoContainer.appendChild(wrapper);
+        }
+      };
+
+      // 既にある配信を購読
+      room.publications.forEach(subscribeAndAttach);
+
+      // 新しく配信されたら購読
+      room.onStreamPublished.add((e) => subscribeAndAttach(e.publication));
+      
+      alert("参加しました！");
+    };
+  </script>
+</body>
+</html>
